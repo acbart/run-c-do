@@ -1,0 +1,205 @@
+name: Deploy to GitHub Pages
+
+# Runs on every push to main, and can be triggered manually.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one concurrent deployment at a time; cancel in-progress runs if a newer
+# push lands before the previous deploy finishes.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout this repo ────────────────────────────────────────────
+      - name: Checkout run-c-do
+        uses: actions/checkout@v4
+
+      # ── 2. Set up Node (used to install Comlink & coi-serviceworker) ─────
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ── 3. Download the pre-built Emception vendor bundle ────────────────
+      # The jprendes/emception 'demo' branch contains a complete pre-built
+      # deployment of the Emception in-browser compiler (llvm-box.wasm,
+      # binaryen-box.wasm, python.wasm, all pack archives, brotli, etc.).
+      # We shallow-clone it and copy every file into vendor/emception/ so that
+      # the emception.worker.bundle.worker.js can resolve its sibling assets
+      # via relative URLs when served from the same directory.
+      - name: Download Emception pre-built assets
+        run: |
+          git clone \
+            --depth 1 \
+            --branch demo \
+            https://github.com/jprendes/emception.git \
+            /tmp/emception-demo
+
+          mkdir -p vendor/emception
+
+          # Copy everything except the .git metadata
+          cp -r /tmp/emception-demo/. vendor/emception/
+          rm -rf vendor/emception/.git
+
+          echo "Emception assets downloaded."
+          ls vendor/emception/ | head -20
+
+      # ── 4. Patch the Emception worker bundle ─────────────────────────────
+      # The upstream emception.worker.bundle.worker.js exposes the Emception
+      # class instance via Comlink, but provides no way to access its virtual
+      # filesystem from outside.  We append a small IIFE that adds a
+      # compileSource(source) method directly to the Emception instance so
+      # compiler-worker.js can call it through the Comlink proxy and get back
+      # { ok, stdout, artifact } without ever touching the FS API directly.
+      - name: Patch Emception worker bundle with compileSource helper
+        run: |
+          cat >> vendor/emception/emception.worker.bundle.worker.js << 'PATCH_EOF'
+
+          /* run-c-do patch — adds compileSource() to the Comlink-exposed instance */
+          ;(function () {
+            "use strict";
+            var em = globalThis.emception;
+            if (!em) {
+              console.error("run-c-do patch: globalThis.emception not found");
+              return;
+            }
+
+            /**
+             * compileSource(source)
+             * Writes the C source into the virtual FS, runs emcc, and returns:
+             *   { ok: bool, stdout: string, artifact: { jsText, wasmData } | null }
+             *
+             * This method is called through the Comlink proxy from compiler-worker.js.
+             * All values in the return object are structured-clone compatible.
+             */
+            em.compileSource = function (source) {
+              /* ── Write source into the virtual filesystem ──────────────── */
+              try {
+                try { em.fileSystem.mkdirTree("/working"); } catch (_) { /* already exists */ }
+                em.fileSystem.writeFile("/working/main.c", source);
+              } catch (err) {
+                return { ok: false, stdout: "FS write error: " + err.message, artifact: null };
+              }
+
+              /* ── Capture stdout / stderr via the Emception hooks ───────── */
+              var stdoutParts = [];
+              var stderrParts = [];
+              em.onstdout = function (line) { stdoutParts.push(line); };
+              em.onstderr = function (line) { stderrParts.push(line); };
+
+              /* ── Invoke emcc ────────────────────────────────────────────── */
+              var result;
+              try {
+                result = em.run(
+                  "emcc",
+                  "/working/main.c",
+                  "-o", "/working/a.out.js",
+                  "-s", "ENVIRONMENT=web,worker",
+                  "-O1"
+                );
+              } catch (err) {
+                return { ok: false, stdout: "emcc error: " + err.message, artifact: null };
+              }
+
+              var combinedOutput = [
+                result.stdout,
+                result.stderr,
+                stdoutParts.join("\n"),
+                stderrParts.join("\n"),
+              ].filter(function (s) { return s && s.trim(); }).join("\n");
+
+              if (result.returncode !== 0) {
+                return { ok: false, stdout: combinedOutput || "(compilation failed)", artifact: null };
+              }
+
+              /* ── Read the compiled output back from the virtual FS ──────── */
+              var jsText = null;
+              var wasmData = null;
+              try {
+                jsText = em.fileSystem.readFile("/working/a.out.js", { encoding: "utf8" });
+              } catch (err) {
+                return {
+                  ok: false,
+                  stdout: combinedOutput + "\nCould not read a.out.js: " + err.message,
+                  artifact: null,
+                };
+              }
+              try {
+                wasmData = em.fileSystem.readFile("/working/a.out.wasm", { encoding: "binary" });
+              } catch (err) {
+                return {
+                  ok: false,
+                  stdout: combinedOutput + "\nCould not read a.out.wasm: " + err.message,
+                  artifact: null,
+                };
+              }
+
+              return {
+                ok: true,
+                stdout: combinedOutput || "(no compiler output)",
+                /* jsText is a plain string; wasmData is a Uint8Array — both
+                   are safe to transfer through Comlink's postMessage. */
+                artifact: { jsText: jsText, wasmData: wasmData },
+              };
+            };
+          })();
+          PATCH_EOF
+
+          echo "Patch applied."
+
+      # ── 5. Install Comlink and coi-serviceworker from npm ────────────────
+      # Comlink (v4) is used by the Emception bundle (it calls Comlink.expose
+      # inside the worker) AND by our compiler-worker.js to wrap the nested
+      # worker.  We pin to the same major version to ensure compatibility.
+      #
+      # coi-serviceworker is a service-worker shim that injects
+      # Cross-Origin-Opener-Policy / Cross-Origin-Embedder-Policy headers so
+      # that SharedArrayBuffer is available on standard GitHub Pages (which
+      # does not support custom response headers natively).
+      - name: Install Comlink and coi-serviceworker
+        run: |
+          npm install --prefix /tmp/vendor-deps \
+            comlink@4.4.1 \
+            coi-serviceworker@0.1.7
+
+          mkdir -p vendor
+
+          # Comlink UMD build — loaded by compiler-worker.js via importScripts()
+          cp /tmp/vendor-deps/node_modules/comlink/dist/umd/comlink.js \
+             vendor/comlink.umd.min.js
+
+          # coi-serviceworker — included by index.html at the top of <head>
+          cp /tmp/vendor-deps/node_modules/coi-serviceworker/coi-serviceworker.min.js \
+             coi-serviceworker.js
+
+          echo "Comlink and coi-serviceworker installed."
+
+      # ── 6. Configure, upload, and deploy to GitHub Pages ─────────────────
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          # Upload the entire repository root (now including vendor/ and the
+          # coi-serviceworker.js file added in previous steps).
+          path: .
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
