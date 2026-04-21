@@ -17,6 +17,20 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>run-c-do – In-Browser C Compiler</title>
+  <!--
+    coi-serviceworker registers a Service Worker that injects
+    Cross-Origin-Opener-Policy and Cross-Origin-Embedder-Policy headers so
+    that SharedArrayBuffer (required by the Emception compiler bundle) is
+    available on GitHub Pages, which does not support custom headers natively.
+
+    On the very first page load the service worker will register and
+    immediately reload the page so the new headers take effect.  On all
+    subsequent loads the page behaves normally.
+
+    coi-serviceworker.js is added to the repository root by the deploy
+    workflow (see .github/workflows/deploy.yml).
+  -->
+  <script src="coi-serviceworker.js"></script>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>

@@ -12,28 +12,34 @@
  *
  * Additionally, some in-browser Emscripten distributions (notably Emception)
  * depend on SharedArrayBuffer and Atomics for their own internal threading,
- * and SharedArrayBuffer is only available in cross-origin-isolated contexts
- * which typically require specific response headers.  Using a Worker is the
- * expected runtime environment for these bundles.
+ * and SharedArrayBuffer is only available in cross-origin-isolated contexts.
+ * The coi-serviceworker.js shim (loaded by index.html) adds the necessary
+ * Cross-Origin-Opener-Policy / Cross-Origin-Embedder-Policy headers on
+ * GitHub Pages so SharedArrayBuffer is available.
  *
  * ══════════════════════════════════════════════════════════
  *  COMPILER ADAPTER — this is where you wire up the bundle
  * ══════════════════════════════════════════════════════════
  *
- * Different in-browser Emscripten distributions expose slightly different
- * APIs.  The section labelled "COMPILER ADAPTER" below is the only place
- * you should need to change when swapping between bundles, e.g.:
- *   • Emception  (https://github.com/nicowillis/emception)
- *   • Cheerp
- *   • Any other browser-ported Clang/Emscripten variant
+ * This adapter uses the pre-built Emception bundle from
+ * vendor/emception/emception.worker.bundle.worker.js.  That bundle is
+ * produced by the deploy workflow (see .github/workflows/deploy.yml) by
+ * cloning the jprendes/emception demo branch.
  *
- * The adapter contract (what this worker expects from the bundle):
- *   - A global or exported `Emception` object (or equivalent) that exposes:
- *       emception.run(args: string[]) → Promise<{ returncode: number,
- *                                                  stdout: string,
- *                                                  stderr: string }>
- *       emception.FS  — an Emscripten-compatible virtual filesystem
- *   - The bundle is loaded via importScripts() from vendor/emception/emception.js
+ * Architecture
+ * ────────────
+ * The Emception bundle was built by the emception/playground project and
+ * exposes a Comlink-proxied Emception instance.  We create a *nested*
+ * Web Worker (a Worker spawned from within this Worker) that runs the
+ * Emception bundle, then communicate with it using Comlink:
+ *
+ *   app.js  ──postMessage──►  compiler-worker.js  ──Comlink──►  emception-worker
+ *           ◄──postMessage──                       ◄──Comlink──
+ *
+ * The Emception bundle is patched by the deploy workflow to add a
+ * compileSource(source) method that handles writing to/reading from the
+ * virtual FS internally, so we never need to access the FS directly from
+ * this side of the Comlink boundary.
  *
  * ══════════════════════════════════════════════════════════
  *
@@ -53,8 +59,8 @@
 "use strict";
 
 /* ── Worker globals ──────────────────────────────────────────────────── */
-let emception  = null;   // The initialised compiler object (set during "init")
-let baseUrl    = "";     // Resolved from the main thread so asset paths work
+let emceptionProxy = null; // Comlink proxy to the nested Emception worker
+let baseUrl        = "";   // Resolved from the main thread so asset paths work
 
 /** How long (ms) to wait for a compiled program to call onExit before resolving anyway. */
 const EXECUTION_TIMEOUT_MS = 5000;
@@ -65,145 +71,86 @@ function postStatus(message, level = "info") {
 }
 
 /* ══════════════════════════════════════════════════════════
- *  COMPILER ADAPTER — adapt this section to your bundle
- * ══════════════════════════════════════════════════════════ */
+ *  COMPILER ADAPTER — Emception via nested Worker + Comlink
+ * ══════════════════════════════════════════════════════════
+ *
+ * The Emception bundle (vendor/emception/emception.worker.bundle.worker.js)
+ * is a self-contained webpack bundle that:
+ *   1. Creates an Emception instance (the in-browser Emscripten/Clang toolchain).
+ *   2. Exposes it via Comlink so the caller can invoke methods across the
+ *      Worker boundary using standard async/await.
+ *
+ * The deploy workflow patches the bundle with a compileSource(source) helper
+ * that handles virtual-FS I/O internally, so we never need to cross the
+ * Comlink boundary to touch the FS directly.
+ *
+ * All communication between this worker and the nested Emception worker uses
+ * Comlink (vendor/comlink.umd.min.js).  Comlink is loaded via importScripts()
+ * once during loadToolchain() and exposes the global `Comlink` object.
+ */
 
 /**
- * loadToolchain(baseUrl)
+ * loadToolchain(base)
  *
- * Loads the in-browser Emscripten/Clang bundle via importScripts().
- * Returns the initialised compiler object.
- *
- * ASSUMPTION: The bundle exposes a global `Emception` constructor/factory
- * and expects to be loaded from the same directory as its wasm/data siblings.
- *
- * If you use a different bundle, adjust:
- *   1. The importScripts() path.
- *   2. How the bundle is instantiated (new Emception() vs a factory call).
- *   3. The API calls in compileSource() and runArtifact().
+ * 1. Loads Comlink via importScripts().
+ * 2. Creates a nested Worker running the Emception bundle.
+ * 3. Wraps it with Comlink.wrap() to obtain an async proxy.
+ * 4. Calls proxy.init() to boot the in-browser toolchain (fetches packs, etc.).
  */
-async function loadToolchain(base) {
-  // `base` is derived from `window.location.href` in app.js — it is the
-  // origin + path of the hosting page, never a value typed by the user.
-  // It is used solely to construct a same-origin URL for the vendor bundle.
-  const scriptUrl = base + "vendor/emception/emception.js";
+async function loadToolchain() {
+  // Derive the base URL from the worker script's own URL (self.location).
+  const workerBase = self.location.href.substring(
+    0,
+    self.location.href.lastIndexOf("/") + 1
+  );
 
-  postStatus("Loading compiler bundle from: " + scriptUrl);
+  // Load Comlink — exposes the global `Comlink` object in this worker scope.
+  importScripts(workerBase + "vendor/comlink.umd.min.js");
 
-  // importScripts() is synchronous in Workers.
-  // It will throw if the script cannot be fetched.
+  const bundleUrl = workerBase + "vendor/emception/emception.worker.bundle.worker.js";
+  postStatus("Starting Emception worker…");
+
+  // Create the nested Worker.  Nested workers (Workers spawned from within a
+  // Worker) are supported in all modern browsers.
+  let nestedWorker;
   try {
-    importScripts(scriptUrl);
+    nestedWorker = new Worker(bundleUrl);
   } catch (err) {
     throw new Error(
-      "Could not load vendor/emception/emception.js\n" +
-      "Make sure you have placed the Emception bundle under vendor/emception/.\n" +
-      "See README.md for instructions.\n" +
+      "Could not create nested Worker from " + bundleUrl + "\n" +
+      "Make sure the deploy workflow has run and vendor/emception/ is populated.\n" +
       "Original error: " + err.message
     );
   }
 
-  // ── Adapt this instantiation to your specific bundle ──────────────────
-  // Emception-style: the script exposes a global `Emception` async factory.
-  // Adjust if your bundle uses a different export name or pattern.
-  if (typeof Emception === "undefined") {
-    throw new Error(
-      "After loading vendor/emception/emception.js, the global `Emception` " +
-      "symbol was not found.  Check that the bundle is an Emception-compatible " +
-      "distribution and update the adapter in compiler-worker.js if needed."
-    );
-  }
+  // Wrap the worker with Comlink so every method call becomes an async RPC.
+  emceptionProxy = Comlink.wrap(nestedWorker);
 
-  postStatus("Initialising compiler…");
+  postStatus("Initialising compiler (first load fetches toolchain data, please wait)…");
 
-  // Emception expects to receive the base path so it can locate its own
-  // sibling .wasm and data assets.  Adjust the option name/value to match
-  // the bundle you are using.
-  const instance = await Emception({
-    // Some builds accept a locateFile callback; others use a hardcoded path.
-    // Use locateFile to redirect wasm/data sibling files:
-    locateFile(filename) {
-      return base + "vendor/emception/" + filename;
-    },
-  });
-
-  return instance;
+  // init() sets up the virtual filesystem, installs the lazy-load packs, and
+  // preloads the core emscripten / cpython / wasm packs.  This is the slow
+  // step on first load; subsequent loads benefit from the browser cache.
+  await emceptionProxy.init();
 }
 
 /**
  * compileSource(source)
  *
- * Writes the C source into the virtual FS and invokes the compiler.
- * Returns { ok, stdout, artifact } where artifact is whatever we
- * need to pass back to runArtifact().
+ * Delegates entirely to the patched compileSource() method on the Emception
+ * proxy.  That method (injected by the deploy workflow) handles:
+ *   - Writing the C source into /working/main.c in the virtual FS.
+ *   - Running emcc against it.
+ *   - Reading back the compiled .js and .wasm artifacts.
  *
- * ASSUMPTION: Emception exposes:
- *   emception.FS.writeFile(path, data)
- *   emception.run(args)  → Promise<{ returncode, stdout, stderr }>
- *   Output is a .js + .wasm pair written to /output/a.out.js
- *
- * Adjust paths and API calls if your bundle works differently.
+ * Returns { ok, stdout, artifact: { jsText, wasmData } | null }.
  */
 async function compileSource(source) {
-  const inputPath  = "/input/main.c";
-  const outputBase = "/output/a.out";
-  const outputJs   = outputBase + ".js";
-  const outputWasm = outputBase + ".wasm";
-
-  // ── Write source into the virtual filesystem ──────────────────────────
-  try {
-    // Ensure directories exist (Emscripten FS may or may not pre-create them).
-    try { emception.FS.mkdir("/input");  } catch (_) { /* already exists */ }
-    try { emception.FS.mkdir("/output"); } catch (_) { /* already exists */ }
-
-    emception.FS.writeFile(inputPath, source);
-  } catch (err) {
-    throw new Error("FS write error: " + err.message);
-  }
-
-  // ── Invoke the compiler ───────────────────────────────────────────────
-  // This is the Emception API.  Other bundles may use a different method
-  // name or argument structure.
   postStatus("Running emcc…");
-
-  const result = await emception.run([
-    "emcc",
-    inputPath,
-    "-o", outputJs,
-    // Produce a JavaScript + WebAssembly output pair that can be run with
-    // the Emscripten JS runtime.
-    "-s", "ENVIRONMENT=web,worker",
-    "-O1",
-  ]);
-
-  const combinedOutput = [result.stdout, result.stderr]
-    .filter(Boolean)
-    .join("\n");
-
-  if (result.returncode !== 0) {
-    return { ok: false, stdout: combinedOutput, artifact: null };
-  }
-
-  // ── Read back the compiled artifact ──────────────────────────────────
-  let jsText   = null;
-  let wasmData = null;
-
-  try {
-    jsText   = emception.FS.readFile(outputJs,   { encoding: "utf8" });
-    wasmData = emception.FS.readFile(outputWasm,  { encoding: "binary" });
-  } catch (err) {
-    return {
-      ok: false,
-      stdout: combinedOutput + "\nFailed to read compiler output: " + err.message,
-      artifact: null,
-    };
-  }
-
-  return {
-    ok:       true,
-    stdout:   combinedOutput || "(no compiler output)",
-    artifact: { jsText, wasmData },
-  };
+  // The proxy call crosses the Comlink boundary into the nested Worker.
+  // The return value is structured-cloned back (strings and Uint8Array are
+  // both safe to transfer through postMessage).
+  return emceptionProxy.compileSource(source);
 }
 
 /**
@@ -304,7 +251,7 @@ self.addEventListener("message", async (event) => {
     case "init": {
       baseUrl = msg.baseUrl || "";
       try {
-        emception = await loadToolchain(baseUrl);
+        await loadToolchain();
         self.postMessage({ type: "ready" });
       } catch (err) {
         self.postMessage({ type: "init-error", message: err.message });
@@ -314,7 +261,7 @@ self.addEventListener("message", async (event) => {
 
     /* ── compile: compile C source ────────────────────────────────────── */
     case "compile": {
-      if (!emception) {
+      if (!emceptionProxy) {
         self.postMessage({
           type:     "compile-result",
           ok:       false,
