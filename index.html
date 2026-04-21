@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<!--
+  run-c-do: In-browser C compiler and runner
+  ==========================================
+  Architecture overview:
+  - All compilation and execution happens entirely client-side in the browser.
+  - No backend, no server, no cloud functions — suitable for GitHub Pages.
+  - Compilation is delegated to a Web Worker (compiler-worker.js) so the UI
+    thread stays responsive during what can be a CPU-intensive operation.
+  - The in-browser Emscripten/Clang bundle lives under vendor/emception/ and
+    must be obtained separately (see README.md for instructions).
+  - The adapter layer between this UI and the compiler API lives in
+    compiler-worker.js — look for the "COMPILER ADAPTER" section there.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>run-c-do – In-Browser C Compiler</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>run-c-do</h1>
+    <p class="tagline">Compile &amp; run C entirely in your browser — no server required.</p>
+  </header>
+
+  <main>
+    <section class="editor-section">
+      <label for="code-editor" class="section-label">C Source Code</label>
+      <textarea id="code-editor" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">
+#include &lt;stdio.h&gt;
+
+int main(void) {
+    printf("Hello, world!\n");
+    return 0;
+}
+</textarea>
+    </section>
+
+    <section class="controls">
+      <button id="btn-compile" type="button">Compile</button>
+      <!--
+        Run is disabled until a successful compile produces an executable
+        artifact. The app.js logic enables it after a successful compile.
+      -->
+      <button id="btn-run" type="button" disabled>Run</button>
+      <span id="status-msg" class="status" aria-live="polite"></span>
+    </section>
+
+    <section class="output-section">
+      <div class="output-pane">
+        <h2>Compiler Output</h2>
+        <pre id="compiler-output" class="output-box" aria-label="Compiler output"></pre>
+      </div>
+      <div class="output-pane">
+        <h2>Program Output</h2>
+        <pre id="program-output" class="output-box" aria-label="Program output"></pre>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>
+      Powered by an in-browser Emscripten/Clang bundle.
+      <a href="https://github.com/acbart/run-c-do" target="_blank" rel="noopener">Source on GitHub</a>.
+    </p>
+  </footer>
+
+  <!-- app.js is loaded as a module so it can use ES-module import syntax if needed -->
+  <script src="app.js"></script>
+</body>
+</html>

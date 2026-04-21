@@ -1,0 +1,19 @@
+# Vendor compiler assets — these are large binaries that should be
+# downloaded/built separately and are not tracked in git.
+# See vendor/emception/README.md for instructions.
+vendor/emception/*.js
+vendor/emception/*.wasm
+vendor/emception/*.data
+vendor/emception/*.mem
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Node local dev dependencies (if any are added later)
+node_modules/
