@@ -1,0 +1,199 @@
+/*
+ * styles.css — run-c-do
+ * Minimal, clean styling for the in-browser C compiler UI.
+ * No framework dependencies.
+ */
+
+/* ── Reset / base ─────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: #0f1117;
+  color: #e2e8f0;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Header ───────────────────────────────────────────────────────────── */
+header {
+  padding: 1.5rem 2rem 1rem;
+  border-bottom: 1px solid #2d3748;
+}
+
+header h1 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: #63b3ed;
+  letter-spacing: 0.02em;
+}
+
+.tagline {
+  font-size: 0.9rem;
+  color: #718096;
+  margin-top: 0.25rem;
+}
+
+/* ── Main content ─────────────────────────────────────────────────────── */
+main {
+  flex: 1;
+  padding: 1.5rem 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  max-width: 1100px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* ── Editor section ───────────────────────────────────────────────────── */
+.section-label {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #718096;
+  margin-bottom: 0.4rem;
+}
+
+#code-editor {
+  width: 100%;
+  height: 220px;
+  background: #1a202c;
+  color: #e2e8f0;
+  border: 1px solid #2d3748;
+  border-radius: 6px;
+  padding: 0.85rem 1rem;
+  font-family: "Fira Code", "Cascadia Code", "Consolas", monospace;
+  font-size: 0.875rem;
+  resize: vertical;
+  outline: none;
+  tab-size: 4;
+  transition: border-color 0.15s;
+}
+
+#code-editor:focus {
+  border-color: #63b3ed;
+}
+
+/* ── Controls ─────────────────────────────────────────────────────────── */
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+button {
+  padding: 0.5rem 1.35rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+}
+
+#btn-compile {
+  background: #3182ce;
+  color: #fff;
+}
+
+#btn-compile:hover:not(:disabled) {
+  background: #2b6cb0;
+}
+
+#btn-run {
+  background: #38a169;
+  color: #fff;
+}
+
+#btn-run:hover:not(:disabled) {
+  background: #2f855a;
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Status message ───────────────────────────────────────────────────── */
+.status {
+  font-size: 0.85rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.status.idle       { color: #718096; }
+.status.loading    { color: #ecc94b; background: rgba(236, 201, 75, 0.1); }
+.status.compiling  { color: #63b3ed; background: rgba(99, 179, 237, 0.1); }
+.status.success    { color: #68d391; background: rgba(104, 211, 145, 0.1); }
+.status.error      { color: #fc8181; background: rgba(252, 129, 129, 0.1); }
+.status.running    { color: #76e4f7; background: rgba(118, 228, 247, 0.1); }
+
+/* ── Output section ───────────────────────────────────────────────────── */
+.output-section {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+@media (max-width: 640px) {
+  .output-section {
+    grid-template-columns: 1fr;
+  }
+}
+
+.output-pane h2 {
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #718096;
+  margin-bottom: 0.4rem;
+}
+
+.output-box {
+  background: #1a202c;
+  border: 1px solid #2d3748;
+  border-radius: 6px;
+  padding: 0.85rem 1rem;
+  font-family: "Fira Code", "Cascadia Code", "Consolas", monospace;
+  font-size: 0.8rem;
+  min-height: 140px;
+  max-height: 320px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #e2e8f0;
+}
+
+/* ── Footer ───────────────────────────────────────────────────────────── */
+footer {
+  padding: 1rem 2rem;
+  border-top: 1px solid #2d3748;
+  font-size: 0.8rem;
+  color: #718096;
+  text-align: center;
+}
+
+footer a {
+  color: #63b3ed;
+  text-decoration: none;
+}
+
+footer a:hover {
+  text-decoration: underline;
+}
