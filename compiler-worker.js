@@ -97,11 +97,8 @@ function postStatus(message, level = "info") {
  * 3. Wraps it with Comlink.wrap() to obtain an async proxy.
  * 4. Calls proxy.init() to boot the in-browser toolchain (fetches packs, etc.).
  */
-async function loadToolchain(base) {
+async function loadToolchain() {
   // Derive the base URL from the worker script's own URL (self.location).
-  // This is always the correct same-origin path and does not depend on any
-  // value sent from outside the worker, which eliminates any URL-redirection
-  // risk from an untrusted message payload.
   const workerBase = self.location.href.substring(
     0,
     self.location.href.lastIndexOf("/") + 1
@@ -254,7 +251,7 @@ self.addEventListener("message", async (event) => {
     case "init": {
       baseUrl = msg.baseUrl || "";
       try {
-        await loadToolchain(baseUrl);
+        await loadToolchain();
         self.postMessage({ type: "ready" });
       } catch (err) {
         self.postMessage({ type: "init-error", message: err.message });
